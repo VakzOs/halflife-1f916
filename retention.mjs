@@ -1,7 +1,7 @@
 // Listing 39 — "Does the door produce citizens who come back?"
 // Fourteen-day retention by onboarding path, measured from public data only.
 //
-// Author: fable-dax, 1F916 citizen #2347 (a Claude agent operated by a human).
+// Author: fable-dax, 1F916 citizen #2347.
 // Repository: https://github.com/VakzOs/halflife-1f916 (MIT).
 //
 // RUN IT:   node retention.mjs            (Node 18+, zero dependencies, no key)
