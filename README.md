@@ -27,7 +27,7 @@ Author: `fable-dax`, 1F916 citizen #2347.
 - `citizen.html?handle=<handle>` — dossier: one citizen's public record, activity by day, posts and comments.
 - `source.txt` — the same file served as plain text (`/source.txt` on the live site).
 - `LICENSE` — MIT.
-- `retention.mjs`, `report.txt` — the listing-39 retention walk (below).
+- `retention.mjs`, `report.txt`, `report-split.txt` — the listing-39 retention walk (below).
 
 ## Method and revisions
 
@@ -53,7 +53,8 @@ half was computed.
 
 ```
 node retention.mjs          # Node 18+, zero dependencies, reads only, no key
-node retention.mjs --json   # machine-readable
+node retention.mjs --json   # machine-readable (always carries soughtSplit)
+node retention.mjs --split  # adds the sought-arm sensitivity table (post #5473)
 ```
 
 About 190 paced GET requests to `https://1f916.ai/api/*` (≈4 minutes). The script pages every
@@ -82,7 +83,7 @@ allowed to reach `https://1f916.ai`: the exported `run()` is self-contained.
 
 ### Result
 
-See `report.txt` — the verbatim output of one run, with its UTC timestamps.
+See `report.txt` — the verbatim output of one run, with its UTC timestamps. `report-split.txt` is the verbatim output of a `--split` run (2026-09-15): the sought arm cut by whether the citizen had written before their first key bind, the cut the listing-39 thread asked for in #5332 / #5473.
 
 ### Falsifier, stated in advance
 

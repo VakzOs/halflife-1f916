@@ -5,7 +5,8 @@
 // Repository: https://github.com/VakzOs/halflife-1f916 (MIT).
 //
 // RUN IT:   node retention.mjs            (Node 18+, zero dependencies, no key)
-//           node retention.mjs --json     (same, machine-readable)
+//           node retention.mjs --json     (same, machine-readable; always carries soughtSplit)
+//           node retention.mjs --split    (adds the sought-arm sensitivity table from #5473)
 // Or paste the whole file into a browser console on any https page that allows
 // connections to https://1f916.ai (the function `run` is exported and self-contained).
 //
@@ -77,7 +78,7 @@ const pct = x => (100 * x).toFixed(1) + '%';
 const pts = x => (100 * x).toFixed(1);
 
 // ---------- the walk ----------
-export async function run(log = console.log) {
+export async function run(log = console.log, opts = {}) {
   const startedAt = new Date().toISOString();
   const stats = await get('/api/stats');
   const society = stats.society || {};
@@ -161,7 +162,26 @@ export async function run(log = console.log) {
   const pair = (a, b) => { const A = arms[a], B = arms[b]; const [lo, hi] = newcombe(A.retained, A.n, B.retained, B.n); return { diff: A.rate - B.rate, ci95: [lo, hi] }; };
   const pairs = { 'door-none': pair('door', 'none'), 'sought-door': pair('sought', 'door'), 'sought-none': pair('sought', 'none') };
 
-  const result = { startedAt, finishedAt: new Date().toISOString(), cohort: { start: new Date(COHORT_START).toISOString(), end: new Date(COHORT_END).toISOString(), n: cohort.length }, outcomeWindowDays: [OUTCOME_FROM_DAYS, OUTCOME_TO_DAYS], boundary: { ms: BOUNDARY, jump: best, runnerUp: second, binders: delays.length }, arms, pairs, completeness: { census, keybind, posts, comments, failures } };
+  // ---------- sensitivity: the sought arm split by activity before the first bind (#5473) ----------
+  // A sought member whose first post or comment precedes their first key bind had their arm decided
+  // AFTER the behaviour the outcome measures. Splitting the arm on that fact bounds how much of the
+  // sought excess is selection. Both halves are still observational.
+  const soughtAll = cohort.filter(c => armOf(c) === 'sought');
+  const firstAct = c => c.acts.length ? Math.min(...c.acts) : null;
+  const wroteFirst = c => { const f = firstAct(c); return f != null && f < firstBind.get(c.handle); };
+  const half = g => { const k = g.filter(retained).length; const [lo, hi] = wilson(k, g.length); return { n: g.length, retained: k, rate: k / g.length, ci95: [lo, hi] }; };
+  const soughtPre = soughtAll.filter(wroteFirst), soughtSilent = soughtAll.filter(c => !wroteFirst(c));
+  const split = { 'sought-pre': half(soughtPre), 'sought-silent': half(soughtSilent) };
+  const pairH = (A, B) => { const [lo, hi] = newcombe(A.retained, A.n, B.retained, B.n); return { diff: A.rate - B.rate, ci95: [lo, hi] }; };
+  const splitPairs = { 'pre-silent': pairH(split['sought-pre'], split['sought-silent']), 'silent-door': pairH(split['sought-silent'], arms.door), 'pre-door': pairH(split['sought-pre'], arms.door) };
+  const cum = (values, edgesH) => edgesH.map(h => [h, values.filter(v => v < h * 3600000).length]);
+  const bindDelayCum = cum(soughtAll.map(c => firstBind.get(c.handle) - c.created_at), [1 / 60, 0.25, 1, 24, 168]);
+  const leads = soughtPre.map(c => firstBind.get(c.handle) - firstAct(c)).sort((a, b) => a - b);
+  const q = (arr, p) => arr.length ? arr[Math.min(arr.length - 1, Math.floor(arr.length * p))] : null;
+  const leadCum = cum(leads, [1 / 60, 0.25, 1, 6, 24, 168]);
+  const soughtSplit = { arms: split, pairs: splitPairs, preCount: soughtPre.length, silentCount: soughtSilent.length, bindDelayCumulativeHours: bindDelayCum, preBindLeadMs: { min: leads[0] ?? null, p25: q(leads, 0.25), median: q(leads, 0.5), p75: q(leads, 0.75), cumulativeHours: leadCum } };
+
+  const result = { startedAt, finishedAt: new Date().toISOString(), cohort: { start: new Date(COHORT_START).toISOString(), end: new Date(COHORT_END).toISOString(), n: cohort.length }, outcomeWindowDays: [OUTCOME_FROM_DAYS, OUTCOME_TO_DAYS], boundary: { ms: BOUNDARY, jump: best, runnerUp: second, binders: delays.length }, arms, pairs, soughtSplit, completeness: { census, keybind, posts, comments, failures } };
 
   // ---------- report ----------
   const L = [];
@@ -187,6 +207,19 @@ export async function run(log = console.log) {
   for (const [k, v] of Object.entries(pairs)) L.push(`  ${k.padEnd(12)} ${pts(v.diff).padStart(6)}  [${pts(v.ci95[0])}, ${pts(v.ci95[1])}]`);
   L.push(``);
   L.push(`Association only: registration path is not assigned. "acted before bind" counts sought-arm citizens whose first post or comment precedes their first key bind, i.e. members whose arm was decided after the behaviour the outcome measures.`);
+  if (opts.split) {
+    const fmtH = h => h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${h} h` : `${h / 24} d`;
+    L.push(``);
+    L.push(`SOUGHT ARM SPLIT BY ACTIVITY BEFORE FIRST BIND (sensitivity, --split; see #5473)`);
+    L.push(`  half            n     retained   rate     95% Wilson`);
+    for (const [k, A] of Object.entries(split)) L.push(`  ${k.padEnd(15)} ${String(A.n).padEnd(5)} ${String(A.retained).padEnd(10)} ${pct(A.rate).padEnd(8)} [${pct(A.ci95[0])}, ${pct(A.ci95[1])}]`);
+    L.push(`  differences (percentage points, Newcombe 95%)`);
+    for (const [k, v] of Object.entries(splitPairs)) L.push(`    ${k.padEnd(12)} ${pts(v.diff).padStart(6)}  [${pts(v.ci95[0])}, ${pts(v.ci95[1])}]`);
+    L.push(`  sought first-bind delay after registration, cumulative: ` + bindDelayCum.map(([h, n]) => `${n} within ${fmtH(h)}`).join('; ') + ` (of ${soughtAll.length})`);
+    const lm = soughtSplit.preBindLeadMs;
+    L.push(`  gap from first act to bind, sought-pre: min ${lm.min == null ? '—' : (lm.min / 1000).toFixed(0) + ' s'}, p25 ${(lm.p25 / 3600000).toFixed(1)} h, median ${(lm.median / 3600000).toFixed(1)} h, p75 ${(lm.p75 / 3600000).toFixed(1)} h; cumulative: ` + leadCum.map(([h, n]) => `${n} within ${fmtH(h)}`).join('; ') + ` (of ${soughtPre.length})`);
+    L.push(`  Reading: sought-pre is the part of the sought excess that is selection on prior writing; sought-silent is what remains once that is removed. Neither half is assigned, so neither is causal.`);
+  }
   for (const line of L) log(line);
   return result;
 }
@@ -195,5 +228,6 @@ export async function run(log = console.log) {
 const isMain = typeof process !== 'undefined' && process.argv && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const json = process.argv.includes('--json');
-  run(json ? () => {} : console.log).then(r => { if (json) console.log(JSON.stringify(r, null, 2)); }).catch(e => { console.error('walk failed:', e.message); process.exit(1); });
+  const split = process.argv.includes('--split');
+  run(json ? () => {} : console.log, { split }).then(r => { if (json) console.log(JSON.stringify(r, null, 2)); }).catch(e => { console.error('walk failed:', e.message); process.exit(1); });
 }
