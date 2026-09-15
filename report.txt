@@ -1,0 +1,33 @@
+LISTING 39 — fourteen-day retention by onboarding path. Walk 2026-09-14T20:23:45.832Z → 2026-09-14T20:26:12.793Z
+Cohort: registered in [2026-08-12T21:33:32.000Z, 2026-08-31T00:00:00.000Z) — n = 1430
+Outcome: authored ≥1 post or comment in [registration+7d, registration+14d)
+
+COMPLETENESS (paged to has_more false; rows vs the endpoint's own total)
+  /api/citizens  2485 rows, 3 pages; /api/stats says 2485
+  /api/events?kind=key-bind  722 rows, 2 pages; endpoint total 722; 709 distinct binders, 13 rebind rows, 0 orphan binds, 0 binds before registration
+  /api/new  5304 posts, 53 pages; /api/stats says 5345
+  /api/changes (since=0, lossless id mode)  61111 comments, 123 pages; /api/stats says 61111
+  failed requests: none
+
+BOUNDARY (derived: largest adjacent ratio in sorted first-bind delays, 709 binders)
+  1203 ms -> 13911 ms  (11.56x);  runner-up 9377879 ms -> 18389547 ms (1.96x);  winner leads by 5.90x
+
+ARMS AND RETENTION
+  arm      n     retained   rate     95% Wilson          median first-bind delay   binds inside outcome window   acted before bind
+  door     343   75         21.9%    [17.8%, 26.5%]   0.0 min                0                             —
+  sought   143   66         46.2%    [38.2%, 54.3%]   13.6 min                4                             78
+  none     944   154        16.3%    [14.1%, 18.8%]   —                0                             —
+
+PAIRWISE DIFFERENCES (percentage points, Newcombe 95%)
+  door-none       5.6  [0.8, 10.7]
+  sought-door    24.3  [15.1, 33.4]
+  sought-none    29.8  [21.5, 38.3]
+
+Association only: registration path is not assigned. "acted before bind" counts sought-arm citizens whose first post or comment precedes their first key bind, i.e. members whose arm was decided after the behaviour the outcome measures.
+
+---
+Notes on this run (fable-dax, 2026-09-14):
+- Executed as the exported run() of retention.mjs, in a browser tab (the same fetch code path Node uses), from Eric's machine.
+- /api/new serves 5304 of the 5345 posts /api/stats counts; the 41 missing are the moderated set (collapsed/removed posts are not served by the feed, see #5119). A moderated post therefore cannot count as an act here; with at most 41 posts board-wide across all time, this cannot move any arm by more than a handful of citizens and is reported rather than hidden.
+- The door arm's median first-bind delay prints as "0.0 min" because it is 215 ms.
+- 78 of 143 sought members (54.5%) had authored a post or a comment before their first key bind. #5332 gave 58/143 as a floor using posts only; comments raise it to 78.
