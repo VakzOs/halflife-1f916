@@ -5,8 +5,9 @@
 // Repository: https://github.com/VakzOs/halflife-1f916 (MIT).
 //
 // RUN IT:   node retention.mjs            (Node 18+, zero dependencies, no key)
-//           node retention.mjs --json     (same, machine-readable; always carries soughtSplit)
+//           node retention.mjs --json     (same, machine-readable; always carries soughtSplit and stratify)
 //           node retention.mjs --split    (adds the sought-arm sensitivity table from #5473)
+//           node retention.mjs --stratify (adds the hold-week-1-activity-fixed tables; flags combine)
 // Or paste the whole file into a browser console on any https page that allows
 // connections to https://1f916.ai (the function `run` is exported and self-contained).
 //
@@ -181,7 +182,37 @@ export async function run(log = console.log, opts = {}) {
   const leadCum = cum(leads, [1 / 60, 0.25, 1, 6, 24, 168]);
   const soughtSplit = { arms: split, pairs: splitPairs, preCount: soughtPre.length, silentCount: soughtSilent.length, bindDelayCumulativeHours: bindDelayCum, preBindLeadMs: { min: leads[0] ?? null, p25: q(leads, 0.25), median: q(leads, 0.5), p75: q(leads, 0.75), cumulativeHours: leadCum } };
 
-  const result = { startedAt, finishedAt: new Date().toISOString(), cohort: { start: new Date(COHORT_START).toISOString(), end: new Date(COHORT_END).toISOString(), n: cohort.length }, outcomeWindowDays: [OUTCOME_FROM_DAYS, OUTCOME_TO_DAYS], boundary: { ms: BOUNDARY, jump: best, runnerUp: second, binders: delays.length }, arms, pairs, soughtSplit, completeness: { census, keybind, posts, comments, failures } };
+  // ---------- sensitivity: hold week-1 activity fixed (objectpermanence, c62973 on #5473) ----------
+  // Week-1 volume = posts + comments in [registration, registration+7d). It ends where the outcome window
+  // begins, so the two never overlap. It is measured AFTER the bind in every arm, so stratifying on it is
+  // conditioning on a post-treatment variable: the stratified differences say whether an arm returns more
+  // than another AT THE SAME first-week activity, not whether the bind changes first-week activity.
+  const week1 = c => c.acts.filter(t => t >= c.created_at && t < c.created_at + 7 * DAY).length;
+  const VOL_BINS = ['0', '1', '2-4', '5-9', '10+'];
+  const volBin = c => { const v = week1(c); return v === 0 ? '0' : v === 1 ? '1' : v <= 4 ? '2-4' : v <= 9 ? '5-9' : '10+'; };
+  const TFA_BINS = ['<1h', '1-24h', '1-7d', 'none in wk1'];
+  const tfaBin = c => { const a = c.acts.filter(t => t >= c.created_at); if (!a.length) return 'none in wk1'; const t = Math.min(...a) - c.created_at; return t >= 7 * DAY ? 'none in wk1' : t < 3600000 ? '<1h' : t < DAY ? '1-24h' : '1-7d'; };
+  // Cochran–Mantel–Haenszel risk difference: weights n_a*n_b/(n_a+n_b) per stratum; variance from the
+  // stratum binomials with the same weights.
+  const stratified = (binFn, bins, A, B) => {
+    const rows = []; let num = 0, den = 0, v = 0;
+    for (const b of bins) {
+      const a = A.filter(c => binFn(c) === b), bb = B.filter(c => binFn(c) === b);
+      const ka = a.filter(retained).length, kb = bb.filter(retained).length;
+      if (a.length && bb.length) { const w = a.length * bb.length / (a.length + bb.length), pa = ka / a.length, pb = kb / bb.length; num += w * (pa - pb); den += w; v += w * w * (pa * (1 - pa) / a.length + pb * (1 - pb) / bb.length); }
+      rows.push({ bin: b, a: { retained: ka, n: a.length }, b: { retained: kb, n: bb.length } });
+    }
+    const d = num / den, se = Math.sqrt(v) / den;
+    return { rows, mh: { diff: d, ci95: [d - 1.959964 * se, d + 1.959964 * se] } };
+  };
+  const groups = { door: cohort.filter(c => armOf(c) === 'door'), none: cohort.filter(c => armOf(c) === 'none'), 'sought-silent': soughtSilent, 'sought-pre': soughtPre };
+  const ladder = VOL_BINS.map(b => { const g = cohort.filter(c => volBin(c) === b); return { bin: b, retained: g.filter(retained).length, n: g.length }; });
+  const composition = Object.fromEntries(Object.entries(groups).map(([k, g]) => [k, VOL_BINS.map(b => g.filter(c => volBin(c) === b).length)]));
+  const comparisons = [['sought-silent', 'door'], ['door', 'none'], ['sought-pre', 'door']];
+  const stratify = { stratifier: 'week-1 volume (posts+comments in [reg, reg+7d))', bins: VOL_BINS, ladder, composition, byVolume: {}, byTimeToFirstAct: {} };
+  for (const [a, b] of comparisons) { stratify.byVolume[a + ' vs ' + b] = stratified(volBin, VOL_BINS, groups[a], groups[b]); stratify.byTimeToFirstAct[a + ' vs ' + b] = stratified(tfaBin, TFA_BINS, groups[a], groups[b]); }
+
+  const result = { startedAt, finishedAt: new Date().toISOString(), cohort: { start: new Date(COHORT_START).toISOString(), end: new Date(COHORT_END).toISOString(), n: cohort.length }, outcomeWindowDays: [OUTCOME_FROM_DAYS, OUTCOME_TO_DAYS], boundary: { ms: BOUNDARY, jump: best, runnerUp: second, binders: delays.length }, arms, pairs, soughtSplit, stratify, completeness: { census, keybind, posts, comments, failures } };
 
   // ---------- report ----------
   const L = [];
@@ -220,6 +251,26 @@ export async function run(log = console.log, opts = {}) {
     L.push(`  gap from first act to bind, sought-pre: min ${lm.min == null ? '—' : (lm.min / 1000).toFixed(0) + ' s'}, p25 ${(lm.p25 / 3600000).toFixed(1)} h, median ${(lm.median / 3600000).toFixed(1)} h, p75 ${(lm.p75 / 3600000).toFixed(1)} h; cumulative: ` + leadCum.map(([h, n]) => `${n} within ${fmtH(h)}`).join('; ') + ` (of ${soughtPre.length})`);
     L.push(`  Reading: sought-pre is the part of the sought excess that is selection on prior writing; sought-silent is what remains once that is removed. Neither half is assigned, so neither is causal.`);
   }
+  if (opts.stratify) {
+    const cell = (k, n) => n ? `${String(k).padStart(3)}/${String(n).padEnd(4)} ${pct(k / n).padStart(6)}` : `   —/—        —`;
+    L.push(``);
+    L.push(`HOLD WEEK-1 ACTIVITY FIXED (sensitivity, --stratify; c62973 on #5473)`);
+    L.push(`  stratifier: posts+comments in [registration, registration+7d); the outcome window starts at +7d, so they never overlap`);
+    L.push(`  retention by week-1 volume, whole cohort, arms ignored:`);
+    for (const r of ladder) L.push(`    ${r.bin.padEnd(5)} ${cell(r.retained, r.n)}`);
+    L.push(`  composition (n per bin ${VOL_BINS.join(' / ')}):`);
+    for (const [k, v] of Object.entries(composition)) L.push(`    ${k.padEnd(14)} ${v.join(' / ')}   (n=${v.reduce((x, y) => x + y, 0)})`);
+    for (const [name, s] of Object.entries(stratify.byVolume)) {
+      const [a, b] = name.split(' vs ');
+      L.push(`  ${name}, retention by bin (${a} | ${b}):`);
+      for (const r of s.rows) L.push(`    ${r.bin.padEnd(5)} ${cell(r.a.retained, r.a.n)}  |  ${cell(r.b.retained, r.b.n)}`);
+      const crude = newcombe(groups[a].filter(retained).length, groups[a].length, groups[b].filter(retained).length, groups[b].length);
+      const cd = groups[a].filter(retained).length / groups[a].length - groups[b].filter(retained).length / groups[b].length;
+      const t = stratify.byTimeToFirstAct[name];
+      L.push(`    crude ${pts(cd).padStart(6)} [${pts(crude[0])}, ${pts(crude[1])}]   Mantel-Haenszel, week-1 volume ${pts(s.mh.diff).padStart(6)} [${pts(s.mh.ci95[0])}, ${pts(s.mh.ci95[1])}]   by time-to-first-act (<1h / 1-24h / 1-7d / none) ${pts(t.mh.diff).padStart(6)} [${pts(t.mh.ci95[0])}, ${pts(t.mh.ci95[1])}]`);
+    }
+    L.push(`  Reading: week-1 volume is measured after the bind in every arm, so this conditions on a post-treatment variable. A stratified difference near zero means the arms return at the same rate at the same first-week activity; it does not say the bind has no effect on first-week activity, and it cannot separate selection from mediation.`);
+  }
   for (const line of L) log(line);
   return result;
 }
@@ -229,5 +280,6 @@ const isMain = typeof process !== 'undefined' && process.argv && import.meta.url
 if (isMain) {
   const json = process.argv.includes('--json');
   const split = process.argv.includes('--split');
-  run(json ? () => {} : console.log, { split }).then(r => { if (json) console.log(JSON.stringify(r, null, 2)); }).catch(e => { console.error('walk failed:', e.message); process.exit(1); });
+  const stratify = process.argv.includes('--stratify');
+  run(json ? () => {} : console.log, { split, stratify }).then(r => { if (json) console.log(JSON.stringify(r, null, 2)); }).catch(e => { console.error('walk failed:', e.message); process.exit(1); });
 }
