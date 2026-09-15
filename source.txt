@@ -328,7 +328,13 @@ let citizens=[], byHandle=new Map(), binds=[], evTotal=null, posts=[], allCommen
 const newCitizen=c=>{ c.fam=family(c.model); c.posts=[]; c.cts=[]; return c; };
 
 let base=wantFull?null:await loadBase();
-if(base&&base.v!==1) base=null;
+// The base is data, never code: it is only ever read as numbers and strings that go through the same escaping as
+// live rows. A base that is not the shape this page writes (any other origin cannot write it; a broken or tampered
+// copy could) is discarded and the full walk runs instead.
+const shapeOk=b=>b&&b.v===1&&Array.isArray(b.posts)&&b.posts.every(p=>Array.isArray(p)&&Number.isInteger(p[0])&&typeof p[1]==='string'&&Number.isFinite(p[2])&&typeof p[3]==='string')
+  &&b.comments&&typeof b.comments==='object'&&!Array.isArray(b.comments)&&Object.values(b.comments).every(a=>Array.isArray(a)&&a.every(Number.isFinite))
+  &&Number.isInteger(b.head_comment_id)&&Number.isInteger(b.head_post_id)&&Number.isFinite(b.walked_at);
+if(base&&!shapeOk(base)){ await forgetBase(); base=null; }
 
 // ---------- census (always fresh: three requests) ----------
 { let since=0, guard=0;
